@@ -65,6 +65,7 @@ config.options = {
 	chkInsertTabs: false,
 	chkUsePreForStorage: true, // Whether to use <pre> format for storage
 	chkDisplayInstrumentation: false,
+	chkRemoveExtraMarkers: false, // #162
 	txtBackupFolder: "",
 	txtEditorFocus: "text",
 	txtMainTab: "tabTimeline",
@@ -181,7 +182,7 @@ if(!((new RegExp("[\u0150\u0170]","g")).test("\u0150"))) {
 }
 config.textPrimitives.sliceSeparator = "::";
 config.textPrimitives.sectionSeparator = "##";
-config.textPrimitives.urlPattern = "(?:file|http|https|mailto|ftp|irc|news|data):[^\\s'\"]+(?:/|\\b)";
+config.textPrimitives.urlPattern = "(?:file|http|https|mailto|ftp|irc|news|data):[^\\s'\"]+(?:/|\\b|\\[|\\])"; // #132
 config.textPrimitives.unWikiLink = "~";
 config.textPrimitives.wikiLink = "(?:(?:" + config.textPrimitives.upperLetter + "+" +
 	config.textPrimitives.lowerLetter + "+" +
@@ -228,7 +229,7 @@ config.shadowTiddlers = {
 	AdvancedOptions: '<<options>>',
 	PluginManager: '<<plugins>>',
 	SystemSettings: '',
-	ToolbarCommands: '|~ViewToolbar|closeTiddler closeOthers +editTiddler > fields syncing permalink references jump|\n|~EditToolbar|+saveTiddler -cancelTiddler deleteTiddler|',
+	ToolbarCommands: '|~ViewToolbar|closeTiddler closeOthers +editTiddler > fields permalink references jump|\n|~EditToolbar|+saveTiddler -cancelTiddler deleteTiddler|', // #160
 	WindowTitle: '<<tiddler SiteTitle>> - <<tiddler SiteSubtitle>>'
 };
 
@@ -296,6 +297,7 @@ merge(config.optionsDesc,{
 	chkForceMinorUpdate: "Don't update modifier username and date when editing tiddlers",
 	chkConfirmDelete: "Require confirmation before deleting tiddlers",
 	chkInsertTabs: "Use the tab key to insert tab characters instead of moving between fields",
+	chkRemoveExtraMarkers: "Replace unused transclusion markers with blanks", // #162
 	txtBackupFolder: "Name of folder to use for backups",
 	txtMaxEditRows: "Maximum number of rows in edit boxes",
 	txtTheme: "Name of the theme to use",
@@ -325,6 +327,8 @@ merge(config.messages,{
 	emptySaved: "Empty template saved",
 	emptyFailed: "Failed to save empty template file",
 	mainSaved: "Main TiddlyWiki file saved",
+	mainDownload: "Downloading/saving main TiddlyWiki file",
+	mainDownloadManual: "RIGHT CLICK HERE to download/save main TiddlyWiki file",
 	mainFailed: "Failed to save main TiddlyWiki file. Your changes have not been saved",
 	macroError: "Error in macro <<%0>>",
 	macroErrorDetails: "Error while executing macro <<%0>>:\n%1",
@@ -738,11 +742,17 @@ var pluginInfo,tiddler; // Used to pass information to plugins in loadPlugins()
 // Whether this file can be saved back to the same location [Preemption]
 window.allowSave = window.allowSave || function(l)
 {
+	return true;
+}
+
+// Whether this file is being viewed locally
+window.isLocal = function()
+{
 	return (document.location.protocol == "file:");
 }
 
 // Whether to use the JavaSaver applet
-var useJavaSaver = window.allowSave() && (config.browser.isSafari || config.browser.isOpera);
+var useJavaSaver = window.isLocal() && (config.browser.isSafari || config.browser.isOpera);
 
 // Allow preemption code a chance to tweak config and useJavaSaver [Preemption]
 if (window.tweakConfig) window.tweakConfig();
@@ -754,6 +764,7 @@ if(!window || !window.console) {
 // Starting up
 function main()
 {
+	window.originalHTML=recreateOriginal();
 
 	var t10,t9,t8,t7,t6,t5,t4,t3,t2,t1,t0 = new Date();
 	startingUp = true;
@@ -781,7 +792,7 @@ function main()
 	t3 = new Date();
 	invokeParamifier(params,"onload");
 	t4 = new Date();
-	readOnly = window.allowSave() ? false : config.options.chkHttpReadOnly;
+	readOnly = window.isLocal() ? false : config.options.chkHttpReadOnly;
 	var pluginProblem = loadPlugins("systemConfig");
 	doc.trigger("loadPlugins");
 	t5 = new Date();
@@ -2127,7 +2138,7 @@ config.macros.tiddler.handler = function(place,macroName,params,wikifier,paramSt
 		refresh: "content", tiddler: tiddlerName
 	});
 	if(args!==undefined)
-		wrapper.setAttribute("args","[["+args.join("]] [[")+"]]");
+		wrapper.macroArgs=args; // #154
 	this.transclude(wrapper,tiddlerName,args);
 };
 
@@ -2149,6 +2160,12 @@ config.macros.tiddler.transclude = function(wrapper,tiddlerName,args)
 			var placeholderRE = new RegExp("\\$" + (i + 1),"mg");
 			text = text.replace(placeholderRE,args[i]);
 		}
+		// #162 start
+		if (n && config.options.chkRemoveExtraMarkers) for(i=n; i<9; i++) {
+			var placeholderRE = new RegExp("\\$" + (i + 1),"mg");
+			text = text.replace(placeholderRE,"");
+		}
+		// #162 end
 		config.macros.tiddler.renderText(wrapper,text,tiddlerName);
 	} finally {
 		stack.pop();
@@ -2527,7 +2544,7 @@ config.macros.newTiddler.onClickNewTiddler = function()
 	var customFields = this.getAttribute("customFields");
 	if(!customFields && !store.isShadowTiddler(title))
 		customFields = String.encodeHashMap(config.defaultCustomFields);
-	story.displayTiddler(null,title,template,false,null,null);
+	story.displayTiddler(this,title,template,false,null,null); // #161
 	var tiddlerElem = story.getTiddler(title);
 	if(customFields)
 		story.addCustomFields(tiddlerElem,customFields);
@@ -3348,7 +3365,7 @@ TiddlyWiki.prototype.getRecursiveTiddlerText = function(title,defaultText,depth)
 };
 
 //TiddlyWiki.prototype.slicesRE = /(?:^([\'\/]{0,2})~?([\.\w]+)\:\1[\t\x20]*([^\n]+)[\t\x20]*$)|(?:^\|([\'\/]{0,2})~?([\.\w]+)\:?\4\|[\t\x20]*([^\n]+)[\t\x20]*\|$)/gm;
-TiddlyWiki.prototype.slicesRE = /(?:^([\'\/]{0,2})~?([\.\w]+)\:\1[\t\x20]*([^\n]*)[\t\x20]*$)|(?:^\|([\'\/]{0,2})~?([\.\w]+)\:?\4\|[\t\x20]*([^\|\n]*)[\t\x20]*\|$)/gm;
+TiddlyWiki.prototype.slicesRE = /(?:^([\'\/]{0,2})~?([\.\w]+)\:\1[\t\x20]*([^\n]+)[\t\x20]*$)|(?:^\|\x20?([\'\/]{0,2})~?([^\|\s\:\~\'\/]|(?:[^\|\s~\'\/][^\|\n\f\r]*[^\|\s\:\'\/]))\:?\4[\x20\t]*\|[\t\x20]*([^\n\t\x20](?:[^\n]*[^\n\t\x20])?)[\t\x20]*\|$)/gm; // #112
 // @internal
 TiddlyWiki.prototype.calcAllSlices = function(title)
 {
@@ -4217,7 +4234,7 @@ Story.prototype.refreshTiddler = function(title,template,force,customFields,defa
 					var tags = [];
 					tiddler.set(title,store.getTiddlerText(title),config.views.wikified.shadowModifier,version.date,tags,version.date);
 				} else {
-					var text = template=="EditTemplate" ?
+					var text = template==config.tiddlerTemplates[DEFAULT_EDIT_TEMPLATE] ?
 								config.views.editor.defaultText.format([title]) :
 								config.views.wikified.defaultText.format([title]);
 					text = defaultText || text;
@@ -5510,6 +5527,7 @@ config.refreshers = {
 
 	tiddler: function(e,changeList)
 		{
+		if (startingUp) return true; // #147
 		var title = e.getAttribute("tiddler");
 		var template = e.getAttribute("template");
 		if(changeList && (changeList.indexOf && changeList.indexOf(title) != -1) && !story.isDirty(title))
@@ -5523,7 +5541,7 @@ config.refreshers = {
 		{
 		var title = e.getAttribute("tiddler");
 		var force = e.getAttribute("force");
-		var args = e.getAttribute("args");
+		var args = e.macroArgs; // #154
 		if(force != null || changeList == null || (changeList.indexOf && changeList.indexOf(title) != -1)) {
 			jQuery(e).empty();
 			config.macros.tiddler.transclude(e,title,args);
@@ -5723,7 +5741,8 @@ function loadCookies()
 {
 	var i,cookies = getCookies();
 	if(cookies['TiddlyWiki']) {
-		cookies = cookies['TiddlyWiki'].decodeHashMap();
+		var unbaked = cookies['TiddlyWiki'].replace(/%22/g,'"'); // #159
+		cookies = unbaked.decodeHashMap(); // #159
 	}
 	for(i in cookies) {
 		if(config.optionsSource[i] != 'setting') {
@@ -5778,7 +5797,12 @@ function saveCookie(name)
 		value = value == null ? 'false' : value;
 		cookies[key] = value;
 	}
-	document.cookie = 'TiddlyWiki=' + String.encodeHashMap(cookies) + '; expires=Fri, 1 Jan 2038 12:00:00 UTC; path=/';
+	// #159 start
+	var baked = 'TiddlyWiki='
+		+ String.encodeHashMap(cookies)
+		+ '; expires=Fri, 1 Jan 2038 12:00:00 UTC; path=/';
+	document.cookie = baked.replace(/"/g,'%22');
+	// #159 end
 	cookies = getCookies();
 	var c;
 	for(c in cookies) {
@@ -6068,9 +6092,40 @@ function autoSaveChanges(onlyIfDirty,tiddlers)
 function loadOriginal(localPath)
 {
 	var content=loadFile(localPath);
+	if (!content) content=window.originalHTML||recreateOriginal();
 	return content;
 }
 
+function recreateOriginal()
+{
+	// construct doctype
+	var content = "<!DOCTYPE ";
+	var t=document.doctype;
+	if (!t) 
+		content+="html"
+	else {
+		content+=t.name;
+		if      (t.publicId)		content+=' PUBLIC "'+t.publicId+'"';
+		else if (t.systemId)		content+=' SYSTEM "'+t.systemId+'"';
+	}
+	content+=' "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"';
+	content+='>\n';
+
+	// append current document content
+	content+=document.documentElement.outerHTML;
+
+	content=content.replace(/<div id="saveTest">savetest<\/div>/,'<div id="saveTest"></div>');
+	content=content.replace(/script><applet [^\>]*><\/applet>/g,'script>');
+	content=content.replace(/><head>/,'>\n<head>');
+	content=content.replace(/\n\n<\/body><\/html>$/,'</body>\n</html>\n');
+	content=content.replace(/(<(meta) [^\>]*[^\/])>/g,'$1 />');
+	content=content.replace(/<noscript>[^\<]*<\/noscript>/,
+		function(m){return m.replace(/&lt;/g,'<').replace(/&gt;/g,'>');});
+	content=content.replace(/<div id="copyright">[^\<]*<\/div>/,
+		function(m){return m.replace(/\xA9/g,'&copy;');});
+
+	return content;
+}
 
 // Save this tiddlywiki with the pending changes
 function saveChanges(onlyIfDirty,tiddlers)
@@ -6100,16 +6155,22 @@ function saveChanges(onlyIfDirty,tiddlers)
 		alert(msg.invalidFileError.format([localPath]));
 		return;
 	}
+	var co=config.options; //# abbreviation
+	config.saveByDownload=false;
+	config.saveByManualDownload=false;
 	saveMain(localPath,original,posDiv);
-	if(config.options.chkSaveBackups)
-		saveBackup(localPath,original);
-	if(config.options.chkSaveEmptyTemplate)
-		saveEmpty(localPath,original,posDiv);
-	if(config.options.chkGenerateAnRssFeed && saveRss instanceof Function)
-		saveRss(localPath);
-	if(config.options.chkDisplayInstrumentation)
+	if (!config.saveByDownload && !config.saveByManualDownload) {
+		if(co.chkSaveBackups)
+			saveBackup(localPath,original);
+		if(co.chkSaveEmptyTemplate)
+			saveEmpty(localPath,original,posDiv);
+		if(co.chkGenerateAnRssFeed && saveRss instanceof Function)
+			saveRss(localPath);
+	}
+	if(co.chkDisplayInstrumentation)
 		displayMessage("saveChanges " + (new Date()-t0) + " ms");
 }
+
 
 function saveMain(localPath,original,posDiv)
 {
@@ -6121,7 +6182,16 @@ function saveMain(localPath,original,posDiv)
 		showException(ex);
 	}
 	if(save) {
-		displayMessage(config.messages.mainSaved,"file://" + localPath);
+		if (!config.saveByManualDownload) {
+			if (config.saveByDownload) { //# set by HTML5DownloadSaveFile()
+				var link = getDataURI(revised);
+				var msg  = config.messages.mainDownload;
+			} else {
+				var link = "file://" + localPath;
+				var msg  = config.messages.mainSaved;
+			}
+			displayMessage(msg,link);
+		}
 		store.setDirty(false);
 	} else {
 		alert(config.messages.mainFailed);
@@ -6282,6 +6352,10 @@ window.saveFile = window.saveFile || function(fileUrl,content)
 		r = ieSaveFile(fileUrl,content);
 	if(!r)
 		r = javaSaveFile(fileUrl,content);
+	if(!r)
+		r = HTML5DownloadSaveFile(fileUrl,content);
+	if(!r)
+		r = manualSaveFile(fileUrl,content);
 	return r;
 }
 
@@ -6447,7 +6521,7 @@ function javaDebugInformation () {
 	var applet = document.applets['TiddlySaver'];
 	var what = [
 		["Java Version", applet.getJavaVersion],
-		["Last Exception", applet.getLastErrorMessage],
+		["Last Exception", applet.getLastErrorMsg], // #156
 		["Last Exception Stack Trace", applet.getLastErrorStackTrace],
 		["System Properties", applet.getSystemProperties] ];
 
@@ -6511,7 +6585,66 @@ function javaLoadFile(filePath)
 	return content.join("\n");
 }
 
-//--
+function HTML5DownloadSaveFile(filePath,content)
+{
+	if(document.createElement("a").download !== undefined) {
+		config.saveByDownload=true;
+		var slashpos=filePath.lastIndexOf("/");
+		if (slashpos==-1) slashpos=filePath.lastIndexOf("\\"); 
+		var filename=filePath.substr(slashpos+1);
+		var uri = getDataURI(content);
+		var link = document.createElement("a");
+		link.setAttribute("target","_blank");
+		link.setAttribute("href",uri);
+		link.setAttribute("download",filename);
+		document.body.appendChild(link); link.click(); document.body.removeChild(link);
+		return true;
+	}
+	return null;
+}
+
+// Returns null if it can't do it, false if there's an error, true if it saved OK
+function manualSaveFile(filePath,content)
+{
+	// FALLBACK for showing a link to data: URI
+	config.saveByManualDownload=true;
+	var slashpos=filePath.lastIndexOf("/");
+	if (slashpos==-1) slashpos=filePath.lastIndexOf("\\"); 
+	var filename=filePath.substr(slashpos+1);
+	var uri = getDataURI(content);
+	displayMessage(config.messages.mainDownloadManual,uri);
+	return true;
+}
+
+// construct data URI (using base64 encoding to preserve multi-byte encodings)
+function getDataURI(data) {
+	if (config.browser.isIE)
+		return "data:text/html,"+encodeURIComponent(data);
+	else
+		return "data:text/html;base64,"+encodeBase64(data);
+}
+
+function encodeBase64(data) {
+	if (!data) return "";
+	var keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+	var out = "";
+	var chr1,chr2,chr3="";
+	var enc1,enc2,enc3,enc4="";
+	for (var count=0,i=0; i<data.length; ) {
+		chr1=data.charCodeAt(i++);
+		chr2=data.charCodeAt(i++);
+		chr3=data.charCodeAt(i++);
+		enc1=chr1 >> 2;
+		enc2=((chr1 & 3) << 4) | (chr2 >> 4);
+		enc3=((chr2 & 15) << 2) | (chr3 >> 6);
+		enc4=chr3 & 63;
+		if (isNaN(chr2)) enc3=enc4=64;
+		else if (isNaN(chr3)) enc4=64;
+		out+=keyStr.charAt(enc1)+keyStr.charAt(enc2)+keyStr.charAt(enc3)+keyStr.charAt(enc4);
+		chr1=chr2=chr3=enc1=enc2=enc3=enc4="";
+	}
+	return out;
+}//--
 //-- Filesystem utilities
 //--
 
@@ -8059,11 +8192,7 @@ String.prototype.format = function(s)
 // Escape any special RegExp characters with that character preceded by a backslash
 String.prototype.escapeRegExp = function()
 {
-	var s = "\\^$*+?()=!|,{}[].";
-	var t,c = this;
-	for(t=0; t<s.length; t++)
-		c = c.replace(new RegExp("\\" + s.substr(t,1),"g"),"\\" + s.substr(t,1));
-	return c;
+    return this.replace(/[\-\/\\\^\$\*\+\?\.\(\)\|\[\]\{\}]/g, '\\$&'); // #157
 };
 
 // Convert "\" to "\s", newlines to "\n" (and remove carriage returns)
